@@ -1,13 +1,17 @@
 {
-  "name": "shopify-api-proxy",
+  "name": "proxy-api",
   "version": "1.0.0",
-  "main": "proxy.js",
+  "description": "Proxy API para productos e imagenes CDO",
+  "main": "index.js",
   "scripts": {
-    "start": "node proxy.js"
+    "start": "node index.js"
   },
   "dependencies": {
+    "cors": "^2.8.5",
     "express": "^4.18.2",
-    "node-fetch": "^2.6.7",
-    "cors": "^2.8.5"
+    "node-fetch": "^2.6.7"
+  },
+  "engines": {
+    "node": ">=14"
   }
 }
