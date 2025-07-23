@@ -1,38 +1,42 @@
-const express = require('express');
-const fetch = require('node-fetch');
-const cors = require('cors');
-
-const app = express();
-app.use(cors());
-
-const PORT = process.env.PORT || 3000;
-
 app.get('/proxy/products', async (req, res) => {
   const { page_size = 24, page_number = 1, family, category } = req.query;
 
-  // Traemos hasta 1000 productos para filtrar localmente
-  const API_URL = `http://api.chile.cdopromocionales.com/v2/products?auth_token=d5pYdHwhB-r9F8uBvGvb1w&page_size=1000&page_number=1`;
+  const pageSizeAPI = 100;
+  let pageNumberAPI = 1;
+  let allProducts = [];
+  let hasMore = true;
 
   try {
-    const response = await fetch(API_URL);
-    const data = await response.json();
+    while (hasMore) {
+      const API_URL = `http://api.chile.cdopromocionales.com/v2/products?auth_token=d5pYdHwhB-r9F8uBvGvb1w&page_size=${pageSizeAPI}&page_number=${pageNumberAPI}`;
+      const response = await fetch(API_URL);
+      const data = await response.json();
 
-    if (!data.products || !Array.isArray(data.products)) {
-      return res.status(500).json({ error: 'Respuesta inválida de API original' });
+      if (!data.products || !Array.isArray(data.products) || data.products.length === 0) {
+        hasMore = false;
+        break;
+      }
+
+      allProducts.push(...data.products);
+
+      // Si la cantidad devuelta es menor que el tamaño de página, ya no hay más
+      if (data.products.length < pageSizeAPI) {
+        hasMore = false;
+      } else {
+        pageNumberAPI++;
+      }
     }
 
-    let productosFiltrados = data.products;
+    let productosFiltrados = allProducts;
 
     if (family) {
       productosFiltrados = productosFiltrados.filter(p => {
-        // Cambia "family_name" según tu API real
         return p.family_name && p.family_name.toLowerCase() === family.toLowerCase();
       });
     }
 
     if (category) {
       productosFiltrados = productosFiltrados.filter(p => {
-        // Cambia "category" según tu API real
         return p.category && p.category.toLowerCase() === category.toLowerCase();
       });
     }
@@ -54,8 +58,4 @@ app.get('/proxy/products', async (req, res) => {
     console.error('Error fetching products:', error);
     res.status(500).json({ error: 'Error al obtener productos' });
   }
-});
-
-app.listen(PORT, () => {
-  console.log(`Servidor corriendo en puerto ${PORT}`);
 });
