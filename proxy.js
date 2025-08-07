@@ -1,73 +1,91 @@
 const express = require('express');
 const fetch = require('node-fetch');
 const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
 
 const app = express();
-app.use(cors());
+const port = process.env.PORT || 3000;
 
-const PORT = process.env.PORT || 3000;
+// Crear carpeta images si no existe
+const imagesDir = path.join(__dirname, 'images');
+if (!fs.existsSync(imagesDir)) {
+  fs.mkdirSync(imagesDir);
+}
 
-const API_BASE = 'http://api.chile.cdopromocionales.com/v2/products';
-const AUTH_TOKEN = 'd5pYdHwhB-r9F8uBvGvb1w';
+// Servir carpeta images estáticamente
+app.use('/images', express.static(imagesDir));
 
-app.get('/proxy/products', async (req, res) => {
-  let page_size = parseInt(req.query.page_size, 10) || 24;
-  let page_number = parseInt(req.query.page_number, 10) || 1;
+const SHOP = 'tu-tienda.myshopify.com';
+const ACCESS_TOKEN = 'tu-access-token-shopify';
 
-  // Limitar tamaños razonables para evitar abusos
-  page_size = Math.min(Math.max(page_size, 1), 100);
-  page_number = Math.max(page_number, 1);
+async function descargarImagen(url) {
+  try {
+    // Crear nombre único para la imagen con hash del URL
+    const hash = crypto.createHash('md5').update(url).digest('hex');
+    const ext = path.extname(url).split('?')[0] || '.jpg';
+    const filename = `${hash}${ext}`;
+    const filepath = path.join(imagesDir, filename);
 
-  const apiUrl = `${API_BASE}?auth_token=${AUTH_TOKEN}&page_size=${page_size}&page_number=${page_number}`;
+    // Si ya existe, devolver ruta local
+    if (fs.existsSync(filepath)) {
+      return `/images/${filename}`;
+    }
+
+    // Descargar imagen
+    const response = await fetch(url);
+    if (!response.ok) throw new Error('Error descargando imagen');
+
+    const buffer = await response.buffer();
+    fs.writeFileSync(filepath, buffer);
+    return `/images/${filename}`;
+  } catch (error) {
+    console.error('Error en descargarImagen:', error);
+    return null;
+  }
+}
+
+app.get('/proxy/product', async (req, res) => {
+  const sku = req.query.sku;
+  if (!sku) return res.status(400).json({ error: 'SKU es requerido' });
 
   try {
-    const response = await fetch(apiUrl);
+    // Traer productos de Shopify (puedes ajustar endpoint y lógica)
+    const response = await fetch(`https://${SHOP}/admin/api/2023-04/products.json`, {
+      headers: {
+        'X-Shopify-Access-Token': ACCESS_TOKEN,
+        'Content-Type': 'application/json',
+      }
+    });
 
     if (!response.ok) {
-      console.error('Error en API externa:', response.statusText);
-      return res.status(502).json({ error: 'Error en la API externa' });
+      return res.status(502).json({ error: 'Error en API Shopify' });
     }
 
     const data = await response.json();
+    const product = data.products.find(p =>
+      p.variants.some(v => v.sku === sku)
+    );
 
-    if (!data.products || !Array.isArray(data.products)) {
-      return res.status(500).json({ error: 'Respuesta inválida de API original' });
+    if (!product) return res.status(404).json({ error: 'Producto no encontrado' });
+
+    // Descargar imágenes y reemplazar URLs por locales
+    for (let i = 0; i < product.images.length; i++) {
+      const url = product.images[i].src;
+      const localPath = await descargarImagen(url);
+      if (localPath) product.images[i].localSrc = localPath;
+      else product.images[i].localSrc = url; // fallback URL original
     }
 
-    res.json({
-      products: data.products,
-      total: data.total || 0,
-      page_number,
-      page_size,
-    });
+    res.json(product);
 
   } catch (error) {
-    console.error('Error proxy productos:', error);
-    res.status(500).json({ error: 'Error al obtener productos' });
+    console.error(error);
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
 
-app.get('/proxy/image', async (req, res) => {
-  const imageUrl = req.query.url;
-  if (!imageUrl || !imageUrl.startsWith('http')) {
-    return res.status(400).send('URL inválida');
-  }
-
-  try {
-    const response = await fetch(imageUrl);
-    if (!response.ok || !response.headers.get('content-type')?.startsWith('image')) {
-      return res.redirect('https://via.placeholder.com/200x150?text=Sin+Imagen');
-    }
-
-    res.set('Access-Control-Allow-Origin', '*');
-    res.set('Content-Type', response.headers.get('content-type'));
-    response.body.pipe(res);
-  } catch (error) {
-    console.error('Error al cargar imagen:', error);
-    res.redirect('https://via.placeholder.com/200x150?text=Sin+Imagen');
-  }
-});
-
-app.listen(PORT, () => {
-  console.log(`Servidor corriendo en puerto ${PORT}`);
+app.listen(port, () => {
+  console.log(`Proxy corriendo en puerto ${port}`);
 });
