@@ -11,7 +11,6 @@ const API_BASE = 'http://api.chile.cdopromocionales.com/v2/products';
 const AUTH_TOKEN = 'd5pYdHwhB-r9F8uBvGvb1w';
 
 app.get('/proxy/products', async (req, res) => {
-  const { page_size = 24, page_number = 1 } = req.query;
   let page_size = parseInt(req.query.page_size, 10) || 24;
   let page_number = parseInt(req.query.page_number, 10) || 1;
 
@@ -39,14 +38,39 @@ app.get('/proxy/products', async (req, res) => {
     res.json({
       products: data.products,
       total: data.total || 0,
-      page_number: Number(page_number),
-      page_size: Number(page_size),
       page_number,
       page_size,
     });
 
   } catch (error) {
-@@ -37,28 +47,27 @@
+    console.error('Error proxy productos:', error);
+    res.status(500).json({ error: 'Error al obtener productos' });
+  }
+});
+
+// Nueva ruta para obtener detalle de producto por código
+app.get('/proxy/product/:code', async (req, res) => {
+  const code = req.params.code;
+  const apiUrl = `${API_BASE}/${encodeURIComponent(code)}?auth_token=${AUTH_TOKEN}`;
+
+  try {
+    const response = await fetch(apiUrl);
+
+    if (!response.ok) {
+      console.error('Error en API externa para producto:', response.statusText);
+      return res.status(502).json({ error: 'Error en la API externa al obtener producto' });
+    }
+
+    const data = await response.json();
+
+    if (!data.product) {
+      return res.status(404).json({ error: 'Producto no encontrado' });
+    }
+
+    res.json(data.product);
+  } catch (error) {
+    console.error('Error proxy producto detalle:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
 
