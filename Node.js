@@ -24,7 +24,6 @@ async function fetchProductosDesdeAPI() {
 app.get('/proxy/products', async (req, res) => {
   try {
     const ahora = Date.now();
-    // Actualiza cache si es nula o expiró
     if (!cacheProductos || (ahora - cacheTimestamp) > CACHE_EXPIRATION) {
       console.log('Actualizando cache de productos...');
       cacheProductos = await fetchProductosDesdeAPI();
@@ -35,7 +34,6 @@ app.get('/proxy/products', async (req, res) => {
 
     const { page_size = 24, page_number = 1, family, category } = req.query;
 
-    // Filtrar localmente
     if (family) {
       productosFiltrados = productosFiltrados.filter(p => p.family_name?.toLowerCase() === family.toLowerCase());
     }
@@ -43,7 +41,6 @@ app.get('/proxy/products', async (req, res) => {
       productosFiltrados = productosFiltrados.filter(p => p.category?.toLowerCase() === category.toLowerCase());
     }
 
-    // Paginar localmente
     const size = parseInt(page_size);
     const page = parseInt(page_number);
     const startIndex = (page - 1) * size;
@@ -63,17 +60,25 @@ app.get('/proxy/products', async (req, res) => {
   }
 });
 
-// Proxy para imágenes (igual que tu código original)
 app.get('/proxy/image', async (req, res) => {
-  const imageUrl = req.query.url;
+  let imageUrl = req.query.url;
+  const size = req.query.size || 'original'; // default size
+
   if (!imageUrl || !imageUrl.startsWith('http')) {
     return res.status(400).send('URL inválida');
+  }
+
+  // Reemplaza "original" en la URL por el tamaño solicitado si existe
+  if (size !== 'original') {
+    if (imageUrl.includes('original')) {
+      imageUrl = imageUrl.replace(/original/gi, size);
+    }
   }
 
   try {
     const response = await fetch(imageUrl);
     if (!response.ok || !response.headers.get('content-type')?.startsWith('image')) {
-      return res.redirect('https://via.placeholder.com/200x150?text=Sin+Imagen');
+      return res.redirect('https://via.placeholder.com/400x400?text=Sin+Imagen');
     }
 
     res.set('Access-Control-Allow-Origin', '*');
@@ -81,7 +86,7 @@ app.get('/proxy/image', async (req, res) => {
     response.body.pipe(res);
   } catch (error) {
     console.error('Error al cargar imagen:', error);
-    res.redirect('https://via.placeholder.com/200x150?text=Sin+Imagen');
+    res.redirect('https://via.placeholder.com/400x400?text=Sin+Imagen');
   }
 });
 
