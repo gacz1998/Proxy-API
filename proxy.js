@@ -1,76 +1,114 @@
 const express = require('express');
 const fetch = require('node-fetch');
 const cors = require('cors');
+const sharp = require('sharp'); // <-- Importa sharp
 
 const app = express();
 app.use(cors());
 
 const PORT = process.env.PORT || 3000;
 
-const API_BASE = 'http://api.chile.cdopromocionales.com/v2/products';
-const AUTH_TOKEN = 'd5pYdHwhB-r9F8uBvGvb1w';
+let cacheProductos = null;
+let cacheTimestamp = 0;
+const CACHE_EXPIRATION = 10 * 60 * 1000; // 10 minutos en ms
 
-// Ruta para obtener productos con paginación
+async function fetchProductosDesdeAPI() {
+  const API_URL = `http://api.chile.cdopromocionales.com/v2/products?auth_token=d5pYdHwhB-r9F8uBvGvb1w&page_size=1000&page_number=1`;
+  const response = await fetch(API_URL);
+  const data = await response.json();
+  if (!data.products || !Array.isArray(data.products)) {
+    throw new Error('Respuesta inválida de API');
+  }
+  return data.products;
+}
+
 app.get('/proxy/products', async (req, res) => {
-  let page_size = parseInt(req.query.page_size, 10) || 10;
-  let page_number = parseInt(req.query.page_number, 10) || 1;
-
-  page_size = Math.min(Math.max(page_size, 1), 50);
-  page_number = Math.max(page_number, 1);
-
-  const apiUrl = `${API_BASE}?auth_token=${AUTH_TOKEN}&page_size=${page_size}&page_number=${page_number}`;
-
   try {
-    const response = await fetch(apiUrl);
-
-    if (!response.ok) {
-      console.error('Error en API externa:', response.statusText);
-      return res.status(502).json({ error: 'Error en la API externa' });
+    const ahora = Date.now();
+    if (!cacheProductos || (ahora - cacheTimestamp) > CACHE_EXPIRATION) {
+      console.log('Actualizando cache de productos...');
+      cacheProductos = await fetchProductosDesdeAPI();
+      cacheTimestamp = ahora;
     }
 
-    const data = await response.json();
+    let productosFiltrados = cacheProductos;
 
-    if (!data.products || !Array.isArray(data.products)) {
-      return res.status(500).json({ error: 'Respuesta inválida de la API original' });
+    const { page_size = 24, page_number = 1, family, category } = req.query;
+
+    if (family) {
+      productosFiltrados = productosFiltrados.filter(p => p.family_name?.toLowerCase() === family.toLowerCase());
     }
+    if (category) {
+      productosFiltrados = productosFiltrados.filter(p => p.category?.toLowerCase() === category.toLowerCase());
+    }
+
+    const size = parseInt(page_size);
+    const page = parseInt(page_number);
+    const startIndex = (page - 1) * size;
+    const endIndex = startIndex + size;
+    const pageItems = productosFiltrados.slice(startIndex, endIndex);
 
     res.json({
-      products: data.products,
-      total: data.total || 0,
-      page_number,
-      page_size,
+      products: pageItems,
+      total: productosFiltrados.length,
+      page_number: page,
+      page_size: size,
     });
+
   } catch (error) {
-    console.error('Error en el proxy de productos:', error);
-    res.status(500).json({ error: 'Error al obtener productos desde el proxy' });
+    console.error('Error proxy productos:', error);
+    res.status(500).json({ error: 'Error al obtener productos' });
   }
 });
 
-// Ruta para cargar imagen y servirla desde el proxy
+// Tamaños soportados y sus anchos en px
+const SIZE_MAP = {
+  small: 200,
+  medium: 800,
+  large: 1600
+};
+
 app.get('/proxy/image', async (req, res) => {
   const imageUrl = req.query.url;
+  const size = req.query.size; // puede ser small, medium, large o undefined
 
   if (!imageUrl || !imageUrl.startsWith('http')) {
-    return res.status(400).send('URL de imagen inválida');
+    return res.status(400).send('URL inválida');
   }
 
   try {
     const response = await fetch(imageUrl);
-
     if (!response.ok || !response.headers.get('content-type')?.startsWith('image')) {
-      return res.redirect('https://via.placeholder.com/300x200?text=Sin+Imagen');
+      return res.redirect('https://via.placeholder.com/200x150?text=Sin+Imagen');
     }
+
+    // Si no se solicita tamaño, devuelve imagen original directo
+    if (!size || !SIZE_MAP[size]) {
+      res.set('Access-Control-Allow-Origin', '*');
+      res.set('Content-Type', response.headers.get('content-type'));
+      response.body.pipe(res);
+      return;
+    }
+
+    const buffer = await response.buffer();
+
+    // Redimensionar con Sharp
+    const width = SIZE_MAP[size];
+
+    const resizedBuffer = await sharp(buffer)
+      .resize({ width })
+      .toBuffer();
 
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Content-Type', response.headers.get('content-type'));
-    response.body.pipe(res);
+    res.send(resizedBuffer);
+
   } catch (error) {
-    console.error('Error al obtener imagen desde el proxy:', error);
-    res.redirect('https://via.placeholder.com/300x200?text=Sin+Imagen');
+    console.error('Error al cargar imagen:', error);
+    res.redirect('https://via.placeholder.com/200x150?text=Sin+Imagen');
   }
 });
 
-// Iniciar servidor
 app.listen(PORT, () => {
-  console.log(`Servidor proxy corriendo en http://localhost:${PORT}`);
+  console.log(`Servidor corriendo en puerto ${PORT}`);
 });
