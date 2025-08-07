@@ -7,11 +7,20 @@ app.use(cors());
 
 const PORT = process.env.PORT || 3000;
 
-// Proxy de productos con filtro por family y category
+const API_URL_BASE = 'http://api.chile.cdopromocionales.com/v2/products?auth_token=d5pYdHwhB-r9F8uBvGvb1w';
+
 app.get('/proxy/products', async (req, res) => {
   const { page_size = 24, page_number = 1, family, category } = req.query;
-  const API_URL = `http://api.chile.cdopromocionales.com/v2/products?auth_token=d5pYdHwhB-r9F8uBvGvb1w&page_size=1000&page_number=1`;
-  // Traemos todos (o máximo 1000) para luego filtrar localmente
+
+  // Construir parámetros para la API externa
+  const params = new URLSearchParams({
+    page_size,
+    page_number,
+  });
+  if (family) params.append('family', family);
+  if (category) params.append('category', category);
+
+  const API_URL = `${API_URL_BASE}&${params.toString()}`;
 
   try {
     const response = await fetch(API_URL);
@@ -21,38 +30,7 @@ app.get('/proxy/products', async (req, res) => {
       return res.status(500).json({ error: 'Respuesta inválida de API original' });
     }
 
-    // Filtrado local por family
-    let productosFiltrados = data.products;
-
-    if (family) {
-      productosFiltrados = productosFiltrados.filter(producto => {
-        // Ajusta según campo exacto en producto que contiene family
-        if (!producto.family_name) return false;
-        return producto.family_name.toLowerCase() === family.toLowerCase();
-      });
-    }
-
-    if (category) {
-      productosFiltrados = productosFiltrados.filter(producto => {
-        // Ajusta según campo exacto en producto que contiene category
-        if (!producto.category) return false;
-        return producto.category.toLowerCase() === category.toLowerCase();
-      });
-    }
-
-    // Paginación local sobre productos filtrados
-    const size = parseInt(page_size);
-    const page = parseInt(page_number);
-    const startIndex = (page - 1) * size;
-    const endIndex = startIndex + size;
-    const pageItems = productosFiltrados.slice(startIndex, endIndex);
-
-    return res.json({
-      products: pageItems,
-      total: productosFiltrados.length,
-      page_number: page,
-      page_size: size
-    });
+    res.json(data);
 
   } catch (error) {
     console.error('Error proxy productos:', error);
@@ -60,7 +38,7 @@ app.get('/proxy/products', async (req, res) => {
   }
 });
 
-// Proxy para imágenes (descarta URLs inválidas)
+// Proxy para imágenes (igual que antes)
 app.get('/proxy/image', async (req, res) => {
   const imageUrl = req.query.url;
   if (!imageUrl || !imageUrl.startsWith('http')) {
