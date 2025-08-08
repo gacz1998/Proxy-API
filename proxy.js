@@ -1,7 +1,7 @@
 const express = require('express');
 const fetch = require('node-fetch');
 const cors = require('cors');
-const sharp = require('sharp'); // <-- Importa sharp
+const sharp = require('sharp');
 
 const app = express();
 app.use(cors());
@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 
 let cacheProductos = null;
 let cacheTimestamp = 0;
-const CACHE_EXPIRATION = 10 * 60 * 1000; // 10 minutos en ms
+const CACHE_EXPIRATION = 10 * 60 * 1000; // 10 minutos
 
 async function fetchProductosDesdeAPI() {
   const API_URL = `http://api.chile.cdopromocionales.com/v2/products?auth_token=d5pYdHwhB-r9F8uBvGvb1w&page_size=1000&page_number=1`;
@@ -42,8 +42,9 @@ app.get('/proxy/products', async (req, res) => {
       productosFiltrados = productosFiltrados.filter(p => p.category?.toLowerCase() === category.toLowerCase());
     }
 
-    const size = parseInt(page_size);
-    const page = parseInt(page_number);
+    const size = Math.min(Math.max(parseInt(page_size) || 24, 1), 1000);
+    const page = Math.max(parseInt(page_number) || 1, 1);
+
     const startIndex = (page - 1) * size;
     const endIndex = startIndex + size;
     const pageItems = productosFiltrados.slice(startIndex, endIndex);
@@ -54,14 +55,13 @@ app.get('/proxy/products', async (req, res) => {
       page_number: page,
       page_size: size,
     });
-
   } catch (error) {
     console.error('Error proxy productos:', error);
     res.status(500).json({ error: 'Error al obtener productos' });
   }
 });
 
-// Tamaños soportados y sus anchos en px
+// Tamaños soportados para imágenes
 const SIZE_MAP = {
   small: 200,
   medium: 800,
@@ -69,8 +69,8 @@ const SIZE_MAP = {
 };
 
 app.get('/proxy/image', async (req, res) => {
-  const imageUrl = req.query.url;
-  const size = req.query.size; // puede ser small, medium, large o undefined
+  let imageUrl = req.query.url;
+  const size = req.query.size; // small, medium, large o undefined
 
   if (!imageUrl || !imageUrl.startsWith('http')) {
     return res.status(400).send('URL inválida');
@@ -82,8 +82,8 @@ app.get('/proxy/image', async (req, res) => {
       return res.redirect('https://via.placeholder.com/200x150?text=Sin+Imagen');
     }
 
-    // Si no se solicita tamaño, devuelve imagen original directo
     if (!size || !SIZE_MAP[size]) {
+      // Sin redimensionar, entregamos original
       res.set('Access-Control-Allow-Origin', '*');
       res.set('Content-Type', response.headers.get('content-type'));
       response.body.pipe(res);
@@ -91,8 +91,6 @@ app.get('/proxy/image', async (req, res) => {
     }
 
     const buffer = await response.buffer();
-
-    // Redimensionar con Sharp
     const width = SIZE_MAP[size];
 
     const resizedBuffer = await sharp(buffer)
