@@ -15,7 +15,7 @@ const CACHE_EXPIRATION = 10 * 60 * 1000; // 10 minutos
 async function fetchProductosDesdeAPI() {
   const API_BASE = 'http://api.chile.cdopromocionales.com/v2/products';
   const AUTH_TOKEN = 'd5pYdHwhB-r9F8uBvGvb1w';
-  const pageSize = 1000; // máximo permitido por la API
+  const pageSize = 500; // máximo permitido por la API
   let pageNumber = 1;
   let todosProductos = [];
   let totalLeidos = 0;
