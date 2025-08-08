@@ -15,7 +15,7 @@ const CACHE_EXPIRATION = 10 * 60 * 1000; // 10 minutos
 async function fetchProductosDesdeAPI() {
   const API_BASE = 'http://api.chile.cdopromocionales.com/v2/products';
   const AUTH_TOKEN = 'd5pYdHwhB-r9F8uBvGvb1w';
-  const pageSize = 32; // máximo permitido por la API
+  const pageSize = 100; // máximo permitido por la API
   let pageNumber = 1;
   let todosProductos = [];
   let totalLeidos = 0;
@@ -44,6 +44,7 @@ async function fetchProductosDesdeAPI() {
   return todosProductos;
 }
 
+// Endpoint para paginar productos
 app.get('/proxy/products', async (req, res) => {
   try {
     const ahora = Date.now();
@@ -80,6 +81,37 @@ app.get('/proxy/products', async (req, res) => {
   } catch (error) {
     console.error('Error proxy productos:', error);
     res.status(500).json({ error: 'Error al obtener productos' });
+  }
+});
+
+// NUEVO: endpoint para producto por SKU
+app.get('/proxy/products/:sku', async (req, res) => {
+  try {
+    const skuBuscado = req.params.sku.toLowerCase();
+
+    // Si cache no existe o expiró, recargar cache
+    const ahora = Date.now();
+    if (!cacheProductos || (ahora - cacheTimestamp) > CACHE_EXPIRATION) {
+      console.log('Actualizando cache de productos para búsqueda SKU...');
+      cacheProductos = await fetchProductosDesdeAPI();
+      cacheTimestamp = ahora;
+    }
+
+    // Buscar producto en cache por sku (insensible a mayúsculas)
+    const producto = cacheProductos.find(p => {
+      const skuProducto = (p.sku || p.code || '').toLowerCase();
+      return skuProducto === skuBuscado;
+    });
+
+    if (!producto) {
+      res.status(404).json({ error: 'Producto no encontrado' });
+      return;
+    }
+
+    res.json(producto);
+  } catch (error) {
+    console.error('Error en búsqueda por SKU:', error);
+    res.status(500).json({ error: 'Error al obtener producto' });
   }
 });
 
