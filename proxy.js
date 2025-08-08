@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 
 let cacheProductos = null;
 let cacheTimestamp = 0;
-const CACHE_EXPIRATION = 10 * 60 * 1000; // 10 minutos
+const CACHE_EXPIRATION = 3 * 60 * 60 * 1000; // 3 horas
 
 async function fetchProductosDesdeAPI() {
   const API_BASE = 'http://api.chile.cdopromocionales.com/v2/products';
