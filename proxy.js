@@ -13,13 +13,35 @@ let cacheTimestamp = 0;
 const CACHE_EXPIRATION = 10 * 60 * 1000; // 10 minutos
 
 async function fetchProductosDesdeAPI() {
-  const API_URL = `http://api.chile.cdopromocionales.com/v2/products?auth_token=d5pYdHwhB-r9F8uBvGvb1w&page_size=1000&page_number=1`;
-  const response = await fetch(API_URL);
-  const data = await response.json();
-  if (!data.products || !Array.isArray(data.products)) {
-    throw new Error('Respuesta inválida de API');
+  const API_BASE = 'http://api.chile.cdopromocionales.com/v2/products';
+  const AUTH_TOKEN = 'd5pYdHwhB-r9F8uBvGvb1w';
+  const pageSize = 1000; // máximo permitido por la API
+  let pageNumber = 1;
+  let todosProductos = [];
+  let totalLeidos = 0;
+
+  while (true) {
+    const url = `${API_BASE}?auth_token=${AUTH_TOKEN}&page_size=${pageSize}&page_number=${pageNumber}`;
+    const response = await fetch(url);
+    const data = await response.json();
+
+    if (!data.products || !Array.isArray(data.products)) {
+      throw new Error('Respuesta inválida de API');
+    }
+
+    todosProductos = todosProductos.concat(data.products);
+    totalLeidos += data.products.length;
+
+    if (data.products.length < pageSize) {
+      // Última página
+      break;
+    }
+    pageNumber++;
   }
-  return data.products;
+
+  console.log(`Productos cargados desde API: ${totalLeidos}`);
+
+  return todosProductos;
 }
 
 app.get('/proxy/products', async (req, res) => {
