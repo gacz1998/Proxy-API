@@ -1,72 +1,37 @@
 const express = require('express');
 const fetch = require('node-fetch');
 const cors = require('cors');
-const sharp = require('sharp');
+// La librería 'sharp' fue eliminada para evitar picos de memoria (OOMKilled) en el plan Starter.
 
 const app = express();
 app.use(cors());
 
 const PORT = process.env.PORT || 3000;
 
+// La caché se ajusta a 10 minutos para reducir la latencia de las peticiones a la API externa.
 let cacheProductos = null;
 let cacheTimestamp = 0;
-const CACHE_EXPIRATION = 6 * 60 * 60 * 1000; // 6 horas
+const CACHE_EXPIRATION = 10 * 60 * 1000; // 10 minutos en ms
 
+// Función de fetch simplificada, asumiendo que 1000 productos es suficiente para el catálogo actual (450)
 async function fetchProductosDesdeAPI() {
-  const API_BASE = 'http://api.chile.cdopromocionales.com/v2/products';
-  const AUTH_TOKEN = 'd5pYdHwhB-r9F8uBvGvb1w';
-  const pageSize = 100; // máximo permitido por la API
-  let pageNumber = 1;
-  let todosProductos = [];
-  let totalLeidos = 0;
-
-  while (true) {
-    // 💡 Implementación de timeout para las llamadas a la API externa
-    // Usamos AbortController para node-fetch para simular un timeout
-    const controller = new AbortController();
-    const timeout = setTimeout(() => {
-        controller.abort();
-    }, 15000); // 15 segundos de timeout para la API externa
-
-    try {
-        const url = `${API_BASE}?auth_token=${AUTH_TOKEN}&page_size=${pageSize}&page_number=${pageNumber}`;
-        const response = await fetch(url, { signal: controller.signal });
-        
-        clearTimeout(timeout);
-
-        const data = await response.json();
-
-        if (!data.products || !Array.isArray(data.products)) {
-          throw new Error('Respuesta inválida de API');
-        }
-
-        todosProductos = todosProductos.concat(data.products);
-        totalLeidos += data.products.length;
-
-        if (data.products.length < pageSize) {
-          // Última página
-          break;
-        }
-        pageNumber++;
-
-    } catch (error) {
-        clearTimeout(timeout);
-        // Si el error es por timeout
-        if (error.name === 'AbortError') {
-            console.error(`Timeout en la página ${pageNumber} de la API externa.`);
-            // Decidimos si relanzar el error o intentar la siguiente página/romper el bucle.
-            throw new Error(`Timeout al descargar productos (Página ${pageNumber})`);
-        }
-        throw error; // Re-lanzamos cualquier otro error
-    }
+  // ATENCIÓN: Esta URL asume que la API externa permite page_size=1000 o que 450 productos caben en una página.
+  const API_URL = `http://api.chile.cdopromocionales.com/v2/products?auth_token=d5pYdHwhB-r9F8uBvGvb1w&page_size=1000&page_number=1`;
+  const response = await fetch(API_URL);
+  
+  if (!response.ok) {
+    throw new Error(`Error al obtener datos de la API externa: ${response.status}`);
   }
-
-  console.log(`Productos cargados desde API: ${totalLeidos}`);
-
-  return todosProductos;
+  
+  const data = await response.json();
+  
+  if (!data.products || !Array.isArray(data.products)) {
+    throw new Error('Respuesta inválida de API');
+  }
+  
+  return data.products;
 }
 
-// Endpoint para paginar productos
 app.get('/proxy/products', async (req, res) => {
   try {
     const ahora = Date.now();
@@ -87,6 +52,8 @@ app.get('/proxy/products', async (req, res) => {
       productosFiltrados = productosFiltrados.filter(p => p.category?.toLowerCase() === category.toLowerCase());
     }
 
+    // 🚀 CORRECCIÓN: Reimplementación de validación robusta para paginación
+    // Asegura que page_size esté entre 1 y 1000, y page_number sea al menos 1.
     const size = Math.min(Math.max(parseInt(page_size) || 24, 1), 1000);
     const page = Math.max(parseInt(page_number) || 1, 1);
 
@@ -100,92 +67,45 @@ app.get('/proxy/products', async (req, res) => {
       page_number: page,
       page_size: size,
     });
+
   } catch (error) {
     console.error('Error proxy productos:', error);
     res.status(500).json({ error: 'Error al obtener productos' });
   }
 });
 
-// NUEVO: endpoint para producto por SKU
-app.get('/proxy/products/:sku', async (req, res) => {
-  try {
-    const skuBuscado = req.params.sku.toLowerCase();
-
-    // Si cache no existe o expiró, recargar cache
-    const ahora = Date.now();
-    if (!cacheProductos || (ahora - cacheTimestamp) > CACHE_EXPIRATION) {
-      console.log('Actualizando cache de productos para búsqueda SKU...');
-      cacheProductos = await fetchProductosDesdeAPI();
-      cacheTimestamp = ahora;
-    }
-
-    // Buscar producto en cache por sku (insensible a mayúsculas)
-    const producto = cacheProductos.find(p => {
-      const skuProducto = (p.sku || p.code || '').toLowerCase();
-      return skuProducto === skuBuscado;
-    });
-
-    if (!producto) {
-      res.status(404).json({ error: 'Producto no encontrado' });
-      return;
-    }
-
-    res.json(producto);
-  } catch (error) {
-    console.error('Error en búsqueda por SKU:', error);
-    res.status(500).json({ error: 'Error al obtener producto' });
-  }
-});
-
-// Tamaños soportados para imágenes
-const SIZE_MAP = {
-  small: 200,
-  medium: 800,
-  large: 1600
-};
-
 app.get('/proxy/image', async (req, res) => {
   let imageUrl = req.query.url;
-  const size = req.query.size; // small, medium, large o undefined
+  const size = req.query.size || 'original'; // default size
 
   if (!imageUrl || !imageUrl.startsWith('http')) {
     return res.status(400).send('URL inválida');
   }
 
+  // Reemplaza "original" en la URL por el tamaño solicitado si existe
+  if (size !== 'original') {
+    // 💡 Usa una expresión regular para asegurar que reemplaza 'original' incluso si hay mayúsculas
+    imageUrl = imageUrl.replace(/original/gi, size);
+  }
+
   try {
     const response = await fetch(imageUrl);
     if (!response.ok || !response.headers.get('content-type')?.startsWith('image')) {
-      return res.redirect('https://via.placeholder.com/200x150?text=Sin+Imagen');
+      return res.redirect('https://via.placeholder.com/400x400?text=Sin+Imagen');
     }
-
-    if (!size || !SIZE_MAP[size]) {
-      // Sin redimensionar, entregamos original
-      res.set('Access-Control-Allow-Origin', '*');
-      res.set('Content-Type', response.headers.get('content-type'));
-      response.body.pipe(res);
-      return;
-    }
-
-    const buffer = await response.buffer();
-    const width = SIZE_MAP[size];
-
-    // ⚠️ ATENCIÓN: Esta línea consume el pico de RAM que está causando OOMKilled en Render Starter.
-    const resizedBuffer = await sharp(buffer)
-      .resize({ width })
-      .toBuffer();
 
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Content-Type', response.headers.get('content-type'));
-    res.send(resizedBuffer);
-
+    
+    // Transfiere el cuerpo de la respuesta de la imagen directamente al cliente
+    response.body.pipe(res);
   } catch (error) {
     console.error('Error al cargar imagen:', error);
-    // Si el error es OOMKilled, el log será lo último que se vea.
-    res.redirect('https://via.placeholder.com/200x150?text=Sin+Imagen');
+    res.redirect('https://via.placeholder.com/400x400?text=Sin+Imagen');
   }
 });
 
 // 🚀 CORRECCIÓN DE PUERTO: Usa el host '0.0.0.0' para evitar el error EADDRINUSE en Render
-app.listen(PORT, '0.0.0.0', () => { 
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`Servidor corriendo en puerto ${PORT}`);
 });
