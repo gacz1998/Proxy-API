@@ -14,19 +14,21 @@ const CACHE_EXPIRATION = 10 * 60 * 1000; // 10 minutos en ms
 
 /**
  * 🚀 OPTIMIZACIÓN DE CONCURRENCIA:
- * Obtiene todos los productos de la API externa realizando hasta 10 peticiones
+ * Obtiene todos los productos de la API externa realizando hasta 6 peticiones
  * de paginación de forma concurrente (en paralelo) usando Promise.all.
- * Esto reduce drásticamente el tiempo de recarga de la caché.
+ * Esto reduce drásticamente el tiempo de recarga de la caché, asumiendo que 
+ * el total de productos no excede las 6 páginas (600 productos).
  */
 async function fetchProductosDesdeAPI() {
     const API_BASE = 'http://api.chile.cdopromocionales.com/v2/products';
     const AUTH_TOKEN = 'd5pYdHwhB-r9F8uBvGvb1w';
     const pageSize = 100; // Tamaño de página seguro
     
-    // Definimos un número máximo de páginas a revisar concurrentemente (cubre hasta 1000 productos)
-    const MAX_PAGES = 10; 
+    // REDUCCIÓN: Usamos 6 páginas (600 productos máx.) en concurrencia para evitar sobrecargar 
+    // al API externo con peticiones que serán vacías o lentas.
+    const MAX_PAGES = 6; 
     
-    console.log('Iniciando carga CONCURRENTE de productos (hasta 10 páginas)...');
+    console.log(`Iniciando carga CONCURRENTE de productos (hasta ${MAX_PAGES} páginas)...`);
     
     const pagePromises = [];
     for (let pageNumber = 1; pageNumber <= MAX_PAGES; pageNumber++) {
@@ -87,6 +89,12 @@ async function fetchProductosDesdeAPI() {
     console.log(`Productos cargados desde API (Concurrente): ${todosProductos.length}`);
     return todosProductos;
 }
+
+// 💖 NUEVA RUTA: Endpoint de Keep-Alive para evitar que el servicio se apague.
+app.get('/keep-alive', (req, res) => {
+    console.log('Keep-Alive: Recibido pulso para mantener el servicio activo.');
+    res.status(200).send('OK');
+});
 
 app.get('/proxy/products', async (req, res) => {
     try {
