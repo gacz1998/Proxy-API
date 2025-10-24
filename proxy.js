@@ -7,25 +7,38 @@ app.use(cors());
 
 const PORT = process.env.PORT || 3000;
 
-// La caché se ajusta a 10 minutos para reducir la latencia de las peticiones a la API externa.
+// =========================================================================
+// === CONFIGURACIÓN DE CACHÉ CON DIFERENTES EXPIRACIONES ===
+// =========================================================================
+
+// La caché de productos tiene toda la información.
 let cacheProductos = null;
 let cacheTimestamp = 0;
-const CACHE_EXPIRATION = 10 * 60 * 1000; // 10 minutos en ms
+
+// EXPIRACIÓN 1: Para la información sensible como Stock - 30 MINUTOS
+const CACHE_EXPIRATION_STOCK = 30 * 60 * 1000; // 30 minutos en ms
+
+// EXPIRACIÓN 2: Para la información de Imágenes/Recursos pesados - 14 DÍAS
+const CACHE_EXPIRATION_PRODUCTS = 14 * 24 * 60 * 60 * 1000; // 14 días en ms
+
+// Bandera para evitar múltiples recargas concurrentes
+let isRefreshingCache = false; 
+
+// Caché para los datos binarios de las imágenes con expiración de 14 días
+const imageCache = new Map();
+
 
 /**
  * 🚀 OPTIMIZACIÓN DE CONCURRENCIA:
  * Obtiene todos los productos de la API externa realizando hasta 6 peticiones
  * de paginación de forma concurrente (en paralelo) usando Promise.all.
- * Esto reduce drásticamente el tiempo de recarga de la caché, asumiendo que 
- * el total de productos no excede las 6 páginas (600 productos).
  */
 async function fetchProductosDesdeAPI() {
     const API_BASE = 'http://api.chile.cdopromocionales.com/v2/products';
     const AUTH_TOKEN = 'd5pYdHwhB-r9F8uBvGvb1w';
-    const pageSize = 100; // Tamaño de página seguro
+    const pageSize = 100; 
     
-    // REDUCCIÓN: Usamos 6 páginas (600 productos máx.) en concurrencia para evitar sobrecargar 
-    // al API externo con peticiones que serán vacías o lentas.
+    // Usamos 6 páginas (600 productos máx.) en concurrencia.
     const MAX_PAGES = 6; 
     
     console.log(`Iniciando carga CONCURRENTE de productos (hasta ${MAX_PAGES} páginas)...`);
@@ -34,13 +47,12 @@ async function fetchProductosDesdeAPI() {
     for (let pageNumber = 1; pageNumber <= MAX_PAGES; pageNumber++) {
         const url = `${API_BASE}?auth_token=${AUTH_TOKEN}&page_size=${pageSize}&page_number=${pageNumber}`;
         
-        // Creamos una promesa para cada página, manejando errores internos para que Promise.all no falle
+        // Creamos una promesa para cada página
         pagePromises.push(
             fetch(url)
                 .then(response => {
                     if (!response.ok) {
                         console.warn(`Página ${pageNumber} falló con status ${response.status}. Ignorando.`);
-                        // Devolvemos un objeto vacío en caso de fallo de red/status para no romper Promise.all
                         return { products: [] }; 
                     }
                     return response.json();
@@ -50,7 +62,6 @@ async function fetchProductosDesdeAPI() {
                         console.warn(`Respuesta inválida para página ${pageNumber}. Ignorando.`);
                         return { products: [] };
                     }
-                    // Retornamos los productos y una bandera para saber si fue la última página
                     return { 
                         products: data.products, 
                         isLastPage: data.products.length < pageSize 
@@ -63,18 +74,12 @@ async function fetchProductosDesdeAPI() {
         );
     }
 
-    // Esperamos a que todas las peticiones concurrentes finalicen
     const results = await Promise.all(pagePromises);
-
     let todosProductos = [];
     
-    // Procesamos secuencialmente los resultados CONCURRENTES:
-    // Concatenamos los productos y nos detenemos cuando encontramos la página parcial (la última).
     for (const result of results) {
         if (result.products.length > 0) {
             todosProductos = todosProductos.concat(result.products);
-            
-            // Si esta página tiene menos que el tamaño de página, asumimos que es la última y terminamos
             if (result.isLastPage) {
                 break;
             }
@@ -82,7 +87,6 @@ async function fetchProductosDesdeAPI() {
     }
 
     if (todosProductos.length === 0) {
-        // Lanzar error si ninguna página pudo cargar, manteniendo la robustez del cache.
         throw new Error('No se pudieron cargar productos de la API');
     }
 
@@ -90,7 +94,7 @@ async function fetchProductosDesdeAPI() {
     return todosProductos;
 }
 
-// 💖 NUEVA RUTA: Endpoint de Keep-Alive para evitar que el servicio se apague.
+// 💖 RUTA: Endpoint de Keep-Alive para evitar que el servicio se apague.
 app.get('/keep-alive', (req, res) => {
     console.log('Keep-Alive: Recibido pulso para mantener el servicio activo.');
     res.status(200).send('OK');
@@ -99,13 +103,41 @@ app.get('/keep-alive', (req, res) => {
 app.get('/proxy/products', async (req, res) => {
     try {
         const ahora = Date.now();
-        // Lógica de caché: actualiza solo si la caché está vacía o ha expirado
-        if (!cacheProductos || (ahora - cacheTimestamp) > CACHE_EXPIRATION) {
-            console.log('Actualizando cache de productos...');
+        // Usamos la expiración más corta (STOCK: 30 min) para decidir cuándo iniciar el refresh en BACKGROUND.
+        const cacheExpiradaParaStock = (ahora - cacheTimestamp) > CACHE_EXPIRATION_STOCK;
+
+        // ** LÓGICA DE STALE-WHILE-REVALIDATE (Stock 30 min) **
+        if (!cacheProductos) {
+            // 1. Si la caché está VACÍA (primer arranque), BLOQUEAMOS.
+            console.log('Cache VACÍA. Bloqueando la petición para cargar inicial...');
             cacheProductos = await fetchProductosDesdeAPI();
             cacheTimestamp = ahora;
+        } else if (cacheExpiradaParaStock && !isRefreshingCache) {
+            // 2. Si la caché de STOCK expiró (30 min) y NO se está recargando:
+            //    a) Servimos los productos viejos inmediatamente (no bloqueamos al usuario).
+            //    b) Iniciamos la recarga en segundo plano (asíncrona).
+            
+            console.log('Cache EXPIRADA para STOCK. Sirviendo datos viejos e iniciando recarga en BACKGROUND (30 min).');
+            
+            isRefreshingCache = true;
+            // Inicia la recarga sin esperar el resultado
+            fetchProductosDesdeAPI()
+                .then(nuevosProductos => {
+                    cacheProductos = nuevosProductos;
+                    cacheTimestamp = Date.now(); 
+                    console.log('Recarga de caché en BACKGROUND completada con éxito. Próxima actualización de Stock en 30 minutos.');
+                })
+                .catch(error => {
+                    console.error('ERROR en recarga de caché en BACKGROUND:', error.message);
+                })
+                .finally(() => {
+                    isRefreshingCache = false;
+                });
+            
+            // La ejecución del request continúa, sirviendo el 'cacheProductos' viejo
         }
-
+        
+        // ... filtramos y paginamos.
         let productosFiltrados = cacheProductos;
 
         const { page_size = 24, page_number = 1, family, category } = req.query;
@@ -139,30 +171,60 @@ app.get('/proxy/products', async (req, res) => {
     }
 });
 
+// =========================================================================
+// === MANEJO DE IMÁGENES: Caching de 14 días para la imagen BINARIA ===
+// =========================================================================
+
 app.get('/proxy/image', async (req, res) => {
     let imageUrl = req.query.url;
     const size = req.query.size || 'original'; // default size
+    const cacheKey = `${imageUrl}_${size}`;
+    const ahora = Date.now();
 
     if (!imageUrl || !imageUrl.startsWith('http')) {
         return res.status(400).send('URL inválida');
     }
 
-    // Reemplaza "original" en la URL por el tamaño solicitado si existe
+    // 1. Lógica de reescritura de URL
+    let finalImageUrl = imageUrl;
     if (size !== 'original') {
-        imageUrl = imageUrl.replace(/original/gi, size);
+        finalImageUrl = imageUrl.replace(/original/gi, size);
     }
 
+    // 2. Verificar caché del proxy (14 días de expiración)
+    const cachedImage = imageCache.get(cacheKey);
+
+    if (cachedImage && (ahora - cachedImage.timestamp) < CACHE_EXPIRATION_PRODUCTS) {
+        // La imagen está en caché y no ha expirado
+        res.set('Access-Control-Allow-Origin', '*');
+        res.set('Content-Type', cachedImage.contentType);
+        // Devolvemos el Buffer desde la cadena base64 guardada
+        return res.send(Buffer.from(cachedImage.data, 'base64'));
+    }
+
+    // 3. Obtener la imagen de la fuente externa (si expiró o no existe)
     try {
-        const response = await fetch(imageUrl);
-        if (!response.ok || !response.headers.get('content-type')?.startsWith('image')) {
+        const response = await fetch(finalImageUrl);
+        const contentType = response.headers.get('content-type');
+        
+        if (!response.ok || !contentType?.startsWith('image')) {
             return res.redirect('https://via.placeholder.com/400x400?text=Sin+Imagen');
         }
 
-        res.set('Access-Control-Allow-Origin', '*');
-        res.set('Content-Type', response.headers.get('content-type'));
+        // 4. Leer y cachear la imagen (como cadena base64)
+        const imageBuffer = await response.buffer();
         
-        // Transfiere el cuerpo de la respuesta de la imagen directamente al cliente
-        response.body.pipe(res);
+        imageCache.set(cacheKey, {
+            data: imageBuffer.toString('base64'), // Guardamos en base64 para evitar problemas de memoria con objetos Buffer
+            contentType: contentType,
+            timestamp: ahora
+        });
+        
+        // 5. Devolver la imagen
+        res.set('Access-Control-Allow-Origin', '*');
+        res.set('Content-Type', contentType);
+        res.send(imageBuffer);
+
     } catch (error) {
         console.error('Error al cargar imagen:', error);
         res.redirect('https://via.placeholder.com/400x400?text=Sin+Imagen');
@@ -172,4 +234,16 @@ app.get('/proxy/image', async (req, res) => {
 // Usa el host '0.0.0.0' para evitar el error EADDRINUSE
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Servidor corriendo en puerto ${PORT}`);
+    
+    // Al iniciar el servidor, carga la caché por primera vez de forma asíncrona
+    // Esto es vital para reducir la latencia de la PRIMERA petición después de un despliegue.
+    fetchProductosDesdeAPI()
+        .then(productos => {
+            cacheProductos = productos;
+            cacheTimestamp = Date.now();
+            console.log('Carga inicial de caché completada en el arranque.');
+        })
+        .catch(err => {
+            console.error('Error en la carga inicial de productos al arranque:', err.message);
+        });
 });
