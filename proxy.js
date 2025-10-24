@@ -13,23 +13,42 @@ let cacheProductos = null;
 let cacheTimestamp = 0;
 const CACHE_EXPIRATION = 10 * 60 * 1000; // 10 minutos en ms
 
-// Función de fetch simplificada, asumiendo que 1000 productos es suficiente para el catálogo actual (450)
+// 🚀 CORRECCIÓN: Se reintroduce la lógica de paginación para garantizar que se descarguen todos los 450 productos.
 async function fetchProductosDesdeAPI() {
-  // ATENCIÓN: Esta URL asume que la API externa permite page_size=1000 o que 450 productos caben en una página.
-  const API_URL = `http://api.chile.cdopromocionales.com/v2/products?auth_token=d5pYdHwhB-r9F8uBvGvb1w&page_size=1000&page_number=1`;
-  const response = await fetch(API_URL);
-  
-  if (!response.ok) {
-    throw new Error(`Error al obtener datos de la API externa: ${response.status}`);
+  const API_BASE = 'http://api.chile.cdopromocionales.com/v2/products';
+  const AUTH_TOKEN = 'd5pYdHwhB-r9F8uBvGvb1w';
+  const pageSize = 100; // Límite seguro asumido por página para la API externa
+  let pageNumber = 1;
+  let todosProductos = [];
+  let totalLeidos = 0;
+
+  while (true) {
+    const url = `${API_BASE}?auth_token=${AUTH_TOKEN}&page_size=${pageSize}&page_number=${pageNumber}`;
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      throw new Error(`Error al obtener datos de la API externa (Página ${pageNumber}): ${response.status}`);
+    }
+    
+    const data = await response.json();
+
+    if (!data.products || !Array.isArray(data.products)) {
+      throw new Error('Respuesta inválida de API');
+    }
+    
+    todosProductos = todosProductos.concat(data.products);
+    totalLeidos += data.products.length;
+
+    if (data.products.length < pageSize) {
+      // Se alcanzó la última página, ya que el número de productos es menor que el tamaño de la página.
+      break;
+    }
+    pageNumber++;
   }
+
+  console.log(`Productos cargados desde API: ${totalLeidos}`);
   
-  const data = await response.json();
-  
-  if (!data.products || !Array.isArray(data.products)) {
-    throw new Error('Respuesta inválida de API');
-  }
-  
-  return data.products;
+  return todosProductos;
 }
 
 app.get('/proxy/products', async (req, res) => {
