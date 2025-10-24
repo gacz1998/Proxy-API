@@ -21,22 +21,44 @@ async function fetchProductosDesdeAPI() {
   let totalLeidos = 0;
 
   while (true) {
-    const url = `${API_BASE}?auth_token=${AUTH_TOKEN}&page_size=${pageSize}&page_number=${pageNumber}`;
-    const response = await fetch(url);
-    const data = await response.json();
+    // 💡 Implementación de timeout para las llamadas a la API externa
+    // Usamos AbortController para node-fetch para simular un timeout
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+        controller.abort();
+    }, 15000); // 15 segundos de timeout para la API externa
 
-    if (!data.products || !Array.isArray(data.products)) {
-      throw new Error('Respuesta inválida de API');
+    try {
+        const url = `${API_BASE}?auth_token=${AUTH_TOKEN}&page_size=${pageSize}&page_number=${pageNumber}`;
+        const response = await fetch(url, { signal: controller.signal });
+        
+        clearTimeout(timeout);
+
+        const data = await response.json();
+
+        if (!data.products || !Array.isArray(data.products)) {
+          throw new Error('Respuesta inválida de API');
+        }
+
+        todosProductos = todosProductos.concat(data.products);
+        totalLeidos += data.products.length;
+
+        if (data.products.length < pageSize) {
+          // Última página
+          break;
+        }
+        pageNumber++;
+
+    } catch (error) {
+        clearTimeout(timeout);
+        // Si el error es por timeout
+        if (error.name === 'AbortError') {
+            console.error(`Timeout en la página ${pageNumber} de la API externa.`);
+            // Decidimos si relanzar el error o intentar la siguiente página/romper el bucle.
+            throw new Error(`Timeout al descargar productos (Página ${pageNumber})`);
+        }
+        throw error; // Re-lanzamos cualquier otro error
     }
-
-    todosProductos = todosProductos.concat(data.products);
-    totalLeidos += data.products.length;
-
-    if (data.products.length < pageSize) {
-      // Última página
-      break;
-    }
-    pageNumber++;
   }
 
   console.log(`Productos cargados desde API: ${totalLeidos}`);
@@ -147,6 +169,7 @@ app.get('/proxy/image', async (req, res) => {
     const buffer = await response.buffer();
     const width = SIZE_MAP[size];
 
+    // ⚠️ ATENCIÓN: Esta línea consume el pico de RAM que está causando OOMKilled en Render Starter.
     const resizedBuffer = await sharp(buffer)
       .resize({ width })
       .toBuffer();
@@ -157,10 +180,12 @@ app.get('/proxy/image', async (req, res) => {
 
   } catch (error) {
     console.error('Error al cargar imagen:', error);
+    // Si el error es OOMKilled, el log será lo último que se vea.
     res.redirect('https://via.placeholder.com/200x150?text=Sin+Imagen');
   }
 });
 
-app.listen(PORT, () => {
+// 🚀 CORRECCIÓN DE PUERTO: Usa el host '0.0.0.0' para evitar el error EADDRINUSE en Render
+app.listen(PORT, '0.0.0.0', () => { 
   console.log(`Servidor corriendo en puerto ${PORT}`);
 });
